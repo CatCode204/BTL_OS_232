@@ -157,8 +157,13 @@ static void *ld_routine(void *args)
 		proc->active_mswp = active_mswp;
 		sem_init(&proc->mm->memlock, 0, 1);
 #endif
-		printf("\tLoaded a process at %s, PID: %d PRIO: %ld\n",
-			   ld_processes.path[i], proc->pid, ld_processes.prio[i]);
+#ifdef PRIO_OVERWRITE
+		printf("\tLoaded a process at %s, PID: %d PRIO: %d\n",
+			   ld_processes.path[i], proc->pid, proc->prio);
+#else 
+		printf("\tLoaded a process at %s, PID: %d PRIO: %d\n",
+			   ld_processes.path[i], proc->pid, proc->priority);
+#endif
 		add_proc(proc);
 		free(ld_processes.path[i]);
 		i++;

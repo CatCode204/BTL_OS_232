@@ -17,6 +17,7 @@ void enqueue(struct queue_t *q, struct pcb_t *proc)
     if (q->size >= MAX_QUEUE_SIZE && proc->prio < MAX_PRIO)
     {
         proc->prio++;
+        printf("\t-----Switch process PID %d to queue %d --------\n", proc->pid, proc->prio);
         enqueue(q->next, proc);
     }
     else if (proc->prio <= MAX_PRIO)
@@ -28,6 +29,7 @@ void enqueue(struct queue_t *q, struct pcb_t *proc)
     if (q->size >= MAX_QUEUE_SIZE && proc->priority < MAX_PRIO)
     {
         proc->priority++;
+        printf("\t-----Switch process PID %d to queue %d --------\n", proc->pid, proc->priority);
         enqueue(q->next, proc);
     }
     else if (proc->priority <= MAX_PRIO)
