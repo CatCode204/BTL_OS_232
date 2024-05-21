@@ -4,6 +4,7 @@
 #define MM_PAGING
 #define PAGING_MAX_MMSWP 4 /* max number of supported swapped space */
 #define PAGING_MAX_SYMTBL_SZ 30
+#include <semaphore.h>
 
 typedef unsigned int uint32_t;
 typedef char BYTE;
@@ -55,6 +56,7 @@ struct mm_struct {
 
    /* list of free page */
    struct pgn_t *fifo_pgn;
+   sem_t memlock;
 };
 
 /*
@@ -72,6 +74,7 @@ struct memphy_struct {
    /* Basic field of data and size */
    BYTE *storage;
    int maxsz;
+   sem_t MEMPHY_lock;
    
    /* Sequential device fields */ 
    int rdmflg;
