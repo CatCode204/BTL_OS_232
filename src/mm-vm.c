@@ -16,17 +16,19 @@
  */
 int enlist_vm_freerg_list(struct mm_struct *mm, struct vm_rg_struct rg_elmt)
 {
+    sem_wait(&mm->memlock);
     struct vm_rg_struct *rg_node = mm->mmap->vm_freerg_list;
 
-    if (rg_elmt.rg_start >= rg_elmt.rg_end)
+    if (rg_elmt.rg_start >= rg_elmt.rg_end){
+        sem_post(&mm->memlock);
         return -1;
-
+    }
     if (rg_node != NULL)
         rg_elmt.rg_next = rg_node;
 
     /* Enlist the new region */
     mm->mmap->vm_freerg_list = &rg_elmt;
-
+    sem_post(&mm->memlock);
     return 0;
 }
 
@@ -88,7 +90,7 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
         caller->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
 
         *alloc_addr = rgnode.rg_start;
-
+        sem_post(&caller->mm->memlock);
         return 0;
     }
 
@@ -105,14 +107,33 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
     /* TODO INCREASE THE LIMIT
    * inc_vma_limit(caller, vmaid, inc_sz)
    */
-    inc_vma_limit(caller, vmaid, inc_sz);
-
+    if(inc_vma_limit(caller, vmaid, inc_sz)){
+        printf("Increase limit failed\n");
+        sem_post(&caller->mm->memlock);
+        return -1;
+    }
+    printf("Increase limit done\n");
     /*Successful increase limit */
     caller->mm->symrgtbl[rgid].rg_start = old_sbrk;
     caller->mm->symrgtbl[rgid].rg_end = old_sbrk + size;
-
+    
+    //Update the freerg list
+    if(cur_vma->vm_freerg_list->rg_start >= cur_vma->vm_freerg_list->rg_end){
+        cur_vma->vm_freerg_list->rg_start = old_sbrk + size;
+        cur_vma->vm_freerg_list->rg_end = cur_vma->sbrk;
+        sem_post(&caller->mm->memlock);
+    }
+    else{
+        //Traverse to the end
+        struct vm_rg_struct rg_elmt_pointer;
+        rg_elmt_pointer.rg_start=old_sbrk + size;
+        rg_elmt_pointer.rg_end=cur_vma->sbrk;
+        
+        enlist_vm_freerg_list(caller->mm,rg_elmt_pointer);
+    }
+    sem_post(&caller->mm->memlock);
     *alloc_addr = old_sbrk;
-
+    
     return 0;
 }
 
@@ -125,16 +146,22 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
  */
 int __free(struct pcb_t *caller, int vmaid, int rgid)
 {
-    struct vm_rg_struct rgnode;
-
-    if(rgid < 0 || rgid > PAGING_MAX_SYMTBL_SZ)
+    sem_wait(&caller->mm->memlock);
+    struct vm_rg_struct rgnode = *get_symrg_byid(caller->mm, rgid);
+    rgnode.rg_next = NULL;
+    if(rgid < 0 || rgid > PAGING_MAX_SYMTBL_SZ){
+        sem_post(&caller->mm->memlock);
         return -1;
+    }
+    
 
     /* TODO: Manage the collect freed region to freerg_list */
-
+    caller->mm->symrgtbl[rgid].rg_start = 0;
+    caller->mm->symrgtbl[rgid].rg_end = 0;
     /*enlist the obsoleted memory region */
+    sem_post(&caller->mm->memlock);
     enlist_vm_freerg_list(caller->mm, rgnode);
-
+    printf("Free memory has done\n");
     return 0;
 }
 
@@ -176,8 +203,8 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
     if (!PAGING_PAGE_PRESENT(pte))
     { /* Page is not online, make it actively living */
         int vicpgn, swpfpn; 
-        //int vicfpn;
-        //uint32_t vicpte;
+        int vicfpn;
+        uint32_t vicpte;
 
         int tgtfpn = PAGING_SWP(pte);//the target frame storing our variable
 
@@ -188,15 +215,19 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
         /* Get free frame in MEMSWP */
         MEMPHY_get_freefp(caller->active_mswp, &swpfpn);
 
+        vicpte = caller->mm->pgd[vicpgn];
+        vicfpn = PAGING_FPN(vicpgn);
 
         /* Do swap frame from MEMRAM to MEMSWP and vice versa*/
         /* Copy victim frame to swap */
-        //__swap_cp_page();
+        printf("Swapping\n");
+        sem_wait(&caller->mram->MEMPHY_lock);
+        __swap_cp_page(caller->mram, vicfpn, caller->active_mswp, swpfpn);
         /* Copy target frame from swap to mem */
-        //__swap_cp_page();
+        __swap_cp_page(caller->active_mswp, tgtfpn, caller->mram, vicfpn);
 
         /* Update page table */
-        //pte_set_swap() &mm->pgd;
+        pte_set_swap(&vicpte, 1, 0);
 
         /* Update its online status of the target page */
         //pte_set_fpn() & mm->pgd[pgn];
@@ -207,10 +238,11 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 #endif
 
         enlist_pgn_node(&caller->mm->fifo_pgn,pgn);
+        sem_post(&caller->mram->MEMPHY_lock);
     }
 
     *fpn = PAGING_FPN(pte);
-
+    printf("Swap done\n");
     return 0;
 }
 
@@ -230,7 +262,7 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
     if(pg_getpage(mm, pgn, &fpn, caller) != 0) 
         return -1; /* invalid page access */
 
-    int phyaddr = (fpn << PAGING_ADDR_FPN_LOBIT) + off;
+    int phyaddr = (fpn << (PAGING_ADDR_FPN_LOBIT - 1)) + off;
 
     MEMPHY_read(caller->mram,phyaddr, data);
 
@@ -253,10 +285,11 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
     if(pg_getpage(mm, pgn, &fpn, caller) != 0) 
         return -1; /* invalid page access */
 
-    int phyaddr = (fpn << PAGING_ADDR_FPN_LOBIT) + off;
+    int phyaddr = (fpn << (PAGING_ADDR_FPN_LOBIT - 1)) + off;
 
+    sem_wait(&caller->mram->MEMPHY_lock);
     MEMPHY_write(caller->mram,phyaddr, value);
-
+    sem_post(&caller->mram->MEMPHY_lock);
     return 0;
 }
 
@@ -404,10 +437,16 @@ struct vm_rg_struct* get_vm_area_node_at_brk(struct pcb_t *caller, int vmaid, in
  */
 int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, int vmastart, int vmaend)
 {
-    //struct vm_area_struct *vma = caller->mm->mmap;
+    struct vm_area_struct *vma = caller->mm->mmap;
 
     /* TODO validate the planned memory area is not overlapped */
-
+    while(vma != NULL){
+    if(vma->vm_start <= vmastart && vmastart < vma->vm_end)
+        return -1;
+    if(vma->vm_start < vmaend && vmaend <= vma->vm_end)
+        return -1;
+    vma = vma->vm_next;
+  }
     return 0;
 }
 
@@ -428,16 +467,19 @@ int inc_vma_limit(struct pcb_t *caller, int vmaid, int inc_sz)
     int old_end = cur_vma->vm_end;
 
     /*Validate overlap of obtained region */
-    if (validate_overlap_vm_area(caller, vmaid, area->rg_start, area->rg_end) < 0)
+    if (validate_overlap_vm_area(caller, vmaid, area->rg_start, area->rg_end) < 0){
+        sem_post(&caller->mram->MEMPHY_lock);
         return -1; /*Overlap and failed allocation */
-
+    }
     /* The obtained vm area (only) 
    * now will be alloc real ram region */
     cur_vma->vm_end += inc_sz;
     if (vm_map_ram(caller, area->rg_start, area->rg_end, 
-                   old_end, incnumpage , newrg) < 0)
+                   old_end, incnumpage , newrg) < 0){
+        sem_post(&caller->mram->MEMPHY_lock);
         return -1; /* Map the memory to MEMRAM */
-
+    }
+    sem_post(&caller->mram->MEMPHY_lock);
     return 0;
 
 }
@@ -453,8 +495,20 @@ int find_victim_page(struct mm_struct *mm, int *retpgn)
 
     /* TODO: Implement the theorical mechanism to find the victim page */
 
-    free(pg);
-
+    if (pg == NULL)
+        return -1;
+    if(pg->pg_next == NULL){
+        *retpgn = pg->pgn;
+        mm->fifo_pgn = NULL;
+        free(pg);
+    }
+    else{
+        while(pg->pg_next->pg_next != NULL)
+            pg = pg->pg_next;        
+        *retpgn = pg->pg_next->pgn;
+        free(pg->pg_next);
+        pg->pg_next = NULL;
+    }
     return 0;
 }
 
@@ -510,6 +564,7 @@ int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_s
                     rgit->rg_next = NULL;
                 }
             }
+            break;
         }
         else
     {

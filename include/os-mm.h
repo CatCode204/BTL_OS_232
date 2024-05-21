@@ -6,7 +6,7 @@
 #define PAGING_MAX_SYMTBL_SZ 30
 #include <semaphore.h>
 
-typedef unsigned int uint32_t;
+// typedef unsigned int uint32_t;
 typedef char BYTE;
 typedef uint32_t addr_t;
 
@@ -69,7 +69,27 @@ struct framephy_struct {
    /* Resereed for tracking allocated framed */
    struct mm_struct* owner;
 };
+struct TLB_node
+{
+   uint32_t MEMPHY; // respresent physical mermory
+   uint32_t MEMVIR; // respresent virtual mermory
+   uint32_t pid;    // process ID.
+   int id;
+   uint32_t indexOfRegister;
+   int isWrite; // is TLB cache written? 0:1
+   struct TLB_node *next;
+   struct TLB_node *prev;
+};
 
+struct TLB_cache
+{
+   int capacity; // number of nodes TLB can hold.
+   int num;      // number of nodes TLB has now.
+   struct TLB_node *head;
+   struct TLB_node *tail;
+   struct TLB_node *freehead;
+   struct TLB_node *freetail;
+};
 struct memphy_struct {
    /* Basic field of data and size */
    BYTE *storage;
@@ -83,6 +103,8 @@ struct memphy_struct {
    /* Management structure */
    struct framephy_struct *free_fp_list;
    struct framephy_struct *used_fp_list;
+   struct TLB_node *tlb_head;
+   struct TLB_node *tlb_tail;
 };
 
 #endif

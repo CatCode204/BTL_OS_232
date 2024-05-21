@@ -25,10 +25,37 @@ int tlb_change_all_page_tables_of(struct pcb_t *proc,  struct memphy_struct * mp
   return 0;
 }
 
-int tlb_flush_tlb_of(struct pcb_t *proc, struct memphy_struct * mp)
+int tlb_flush_tlb_of(struct TLB_cache *flush)
 {
   /* TODO flush tlb cached*/
-
+  struct TLB_node *ptr, *tmp;
+  ptr = flush->head;
+  if (ptr != NULL) {
+      while (ptr != NULL) {
+          if (ptr->isWrite == 1) {
+              printf("memphy: %5d | memv: '%5d'| pid: '%d'\n", ptr->MEMPHY, ptr->MEMVIR, ptr->pid);
+          }
+          tmp = ptr;
+          ptr = ptr->next;
+          free(tmp);
+      }
+      flush->head = NULL;
+      flush->tail = NULL;
+  } else {
+      printf("TLB Cache is empty.\n");
+  }
+  ptr = flush->freehead;
+  if (ptr != NULL) {
+      while (ptr != NULL) {
+          tmp = ptr;
+          ptr = ptr->next;
+          free(tmp);
+      }
+      flush->freehead = NULL;
+      flush->freetail = NULL;
+  } else {
+      printf("Freelist is empty.\n");
+  }
   return 0;
 }
 
@@ -41,6 +68,34 @@ int tlballoc(struct pcb_t *proc, uint32_t size, uint32_t reg_index)
 {
   int addr, val;
 
+  struct TLB_cache *tlb = proc->tlb;  // proc is added TLB_cache struct.
+		
+  if (size > proc->tlb->num){
+    printf("missing mermory region! \n");
+    return -1;        
+  }
+
+  for (int i=0;i<size;i++){
+    
+    struct TLB_node *freeTLB = tlb->freetail;
+    proc->tlb->freetail = proc->tlb->freetail->prev;
+    proc->tlb->freetail->next = NULL;
+
+
+    freeTLB->next = freeTLB->prev = NULL;
+    freeTLB->indexOfRegister = reg_index;
+    freeTLB->isWrite = 0;       
+    if (proc->tlb->head == NULL){
+          proc->tlb->head = proc->tlb->tail = freeTLB;
+          proc->tlb->num--; 
+    }
+    else {
+      proc->tlb->tail->next = freeTLB;
+      freeTLB->prev = proc->tlb->tail;
+      proc->tlb->tail = freeTLB;
+      proc->tlb->num--;
+    }
+  }
   /* By default using vmaid = 0 */
   val = __alloc(proc, 0, reg_index, size, &addr);
 
@@ -57,6 +112,46 @@ int tlballoc(struct pcb_t *proc, uint32_t size, uint32_t reg_index)
  */
 int tlbfree_data(struct pcb_t *proc, uint32_t reg_index)
 {
+  struct TLB_node *temp = proc->tlb->head;
+  if(temp == NULL){
+	printf("Invalid!\n");
+	return -1;
+  }
+  while(temp != NULL){
+    if(temp->indexOfRegister == reg_index){
+      struct TLB_node *tlbnode = temp;
+      if(proc->tlb->head == temp) {
+        if(proc->tlb->head == proc->tlb->tail){
+          proc->tlb->head = proc->tlb->tail = NULL;
+        }
+        else{
+          proc->tlb->head = proc->tlb->head->next;
+          proc->tlb->head->prev = NULL;
+          }
+        }
+        else if (temp == proc->tlb->tail){
+          proc->tlb->tail = proc->tlb->tail->prev;
+          proc->tlb->tail->next = NULL;
+        }
+        else {
+          tlbnode->next->prev = tlbnode->prev;
+          tlbnode->prev->next = tlbnode->next;
+        }
+        temp = temp->next;
+        tlbnode->isWrite = 0;
+
+        //giai phong con tro hien tai
+        tlbnode->next = tlbnode->prev = NULL;
+        //Them vung nho duoc gai phong vao freelist
+        proc->tlb->freetail->next = tlbnode;
+        tlbnode->prev = proc->tlb->freetail;
+        proc->tlb->freetail = tlbnode;
+
+      proc->tlb->num++;
+      continue;
+    }
+    temp = temp->next;
+  }
   __free(proc, 0, reg_index);
 
   /* TODO update TLB CACHED frame num of freed page(s)*/
@@ -75,7 +170,9 @@ int tlbfree_data(struct pcb_t *proc, uint32_t reg_index)
 int tlbread(struct pcb_t * proc, uint32_t source,
             uint32_t offset, 	uint32_t destination) 
 {
-  BYTE data, frmnum = -1;
+  BYTE data;
+  uint32_t frmnum = -1;
+  int srcaddr = source + offset;
 	
   /* TODO retrieve TLB CACHED frame num of accessing page(s)*/
   /* by using tlb_cache_read()/tlb_cache_write()*/
@@ -97,7 +194,7 @@ int tlbread(struct pcb_t * proc, uint32_t source,
   int val = __read(proc, 0, source, offset, &data);
 
   destination = (uint32_t) data;
-
+  tlb_cache_write (proc->tlb, proc->pid, destination, srcaddr);
   /* TODO update TLB CACHED with frame num of recent accessing page(s)*/
   /* by using tlb_cache_read()/tlb_cache_write()*/
 
@@ -114,7 +211,7 @@ int tlbwrite(struct pcb_t * proc, BYTE data,
              uint32_t destination, uint32_t offset)
 {
   int val;
-  BYTE frmnum = -1;
+  uint32_t frmnum = -1;
 
   /* TODO retrieve TLB CACHED frame num of accessing page(s))*/
   /* by using tlb_cache_read()/tlb_cache_write()
@@ -134,7 +231,7 @@ int tlbwrite(struct pcb_t * proc, BYTE data,
 #endif
 
   val = __write(proc, 0, destination, offset, data);
-
+    tlb_cache_write (proc->tlb, proc->pid, destination, destination + offset);
   /* TODO update TLB CACHED with frame num of recent accessing page(s)*/
   /* by using tlb_cache_read()/tlb_cache_write()*/
 
