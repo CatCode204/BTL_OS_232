@@ -81,60 +81,59 @@ struct vm_rg_struct *get_symrg_byid(struct mm_struct *mm, int rgid)
  */
 int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr)
 {
-    /*Allocate at the toproof */
-    struct vm_rg_struct rgnode;
+ 
+  /*Allocate at the toproof */
+  sem_wait(&caller->mm->memlock);
+  struct vm_rg_struct rgnode;
+  if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0)
+  {
+    caller->mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
+    caller->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
+    *alloc_addr = rgnode.rg_start;
+    sem_post(&caller->mm->memlock);
+    return 0;
+  }
+  /* TODO get_free_vmrg_area FAILED handle the region management (Fig.6)*/
 
-    if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0)
-    {
-        caller->mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
-        caller->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
+  /*Attempt to increate limit to get space */
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
+  
+  int inc_sz = PAGING_PAGE_ALIGNSZ(size);
+  //int inc_limit_ret
+  int old_sbrk =cur_vma->sbrk;
 
-        *alloc_addr = rgnode.rg_start;
-        sem_post(&caller->mm->memlock);
-        return 0;
-    }
-
-    /* TODO get_free_vmrg_area FAILED handle the region management (Fig.6)*/
-
-    /*Attempt to increate limit to get space */
-    struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
-    int inc_sz = PAGING_PAGE_ALIGNSZ(size);
-    //int inc_limit_ret
-    int old_sbrk ;
-
-    old_sbrk = cur_vma->sbrk;
-
-    /* TODO INCREASE THE LIMIT
+  
+  /* TODO INCREASE THE LIMIT
    * inc_vma_limit(caller, vmaid, inc_sz)
    */
-    if(inc_vma_limit(caller, vmaid, inc_sz)){
-        printf("Increase limit failed\n");
-        sem_post(&caller->mm->memlock);
-        return -1;
-    }
-    printf("Increase limit done\n");
-    /*Successful increase limit */
-    caller->mm->symrgtbl[rgid].rg_start = old_sbrk;
-    caller->mm->symrgtbl[rgid].rg_end = old_sbrk + size;
-    
-    //Update the freerg list
-    if(cur_vma->vm_freerg_list->rg_start >= cur_vma->vm_freerg_list->rg_end){
-        cur_vma->vm_freerg_list->rg_start = old_sbrk + size;
-        cur_vma->vm_freerg_list->rg_end = cur_vma->sbrk;
-        sem_post(&caller->mm->memlock);
-    }
-    else{
-        //Traverse to the end
-        struct vm_rg_struct rg_elmt_pointer;
-        rg_elmt_pointer.rg_start=old_sbrk + size;
-        rg_elmt_pointer.rg_end=cur_vma->sbrk;
-        
-        enlist_vm_freerg_list(caller->mm,rg_elmt_pointer);
-    }
+  cur_vma->sbrk += inc_sz;
+  if(inc_vma_limit(caller, vmaid, inc_sz)){
+    printf("Increase limit failed\n");
     sem_post(&caller->mm->memlock);
-    *alloc_addr = old_sbrk;
-    
-    return 0;
+    return -1;
+  }
+  printf("Increase limit done\n");
+  /*Successful increase limit */
+  caller->mm->symrgtbl[rgid].rg_start = old_sbrk;
+  caller->mm->symrgtbl[rgid].rg_end = old_sbrk + size;
+  
+  //Update the freerg list
+  if(cur_vma->vm_freerg_list->rg_start>=cur_vma->vm_freerg_list->rg_end){
+    cur_vma->vm_freerg_list->rg_start=old_sbrk + size;
+    cur_vma->vm_freerg_list->rg_end=cur_vma->sbrk;
+    sem_post(&caller->mm->memlock);
+  }
+  else{
+    //Traverse to the end
+   
+    struct vm_rg_struct rg_elmt_pointer;
+    rg_elmt_pointer.rg_start=old_sbrk + size;
+    rg_elmt_pointer.rg_end=cur_vma->sbrk;
+    sem_post(&caller->mm->memlock);
+    enlist_vm_freerg_list(caller->mm,rg_elmt_pointer);
+  }
+  *alloc_addr = old_sbrk;
+  return 0;
 }
 
 /*__free - remove a region memory
