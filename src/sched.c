@@ -11,8 +11,6 @@ static pthread_mutex_t queue_lock;
 
 #ifdef MLQ_SCHED
 static struct queue_t mlq_ready_queue[MAX_PRIO];
-static int slot[MAX_PRIO];
-static int curPRIO = 0;
 #endif
 
 int queue_empty(void) {
@@ -30,7 +28,7 @@ void init_scheduler(void) {
 	int i ;
 	for (i = 0; i < MAX_PRIO; i ++) {
 		mlq_ready_queue[i].size = 0;
-        slot[i] = MAX_PRIO - i;
+        mlq_ready_queue[i].slot = MAX_PRIO - i;
         mlq_ready_queue[i].top = -1;
         mlq_ready_queue[i].bot = 0;
     }
@@ -52,27 +50,23 @@ void init_scheduler(void) {
  *  State representation   prio = 0 .. MAX_PRIO, curr_slot = 0..(MAX_PRIO - prio)
  */
 struct pcb_t * get_mlq_proc(void) {
-    struct pcb_t * rt = NULL;
+    struct pcb_t* rt = NULL;
     pthread_mutex_lock(&queue_lock);
-    if (!empty(&mlq_ready_queue[curPRIO]) && slot[curPRIO] > 0) {
-        slot[curPRIO]--;
-        rt = dequeue(&mlq_ready_queue[curPRIO]);
-        enqueue(&mlq_ready_queue[curPRIO], rt);
-    } else { //CAN'T GET curPRIO ready_queue (out of slot or empty)
-        slot[curPRIO] = MAX_PRIO - curPRIO;
-        int holdCur = curPRIO;
-        curPRIO = (curPRIO + 1) % MAX_PRIO;
-        while (curPRIO != holdCur && empty(&mlq_ready_queue[curPRIO])) {
-            slot[curPRIO] = MAX_PRIO - curPRIO;
-            curPRIO = (curPRIO + 1) % MAX_PRIO;
+    for (int i=0;i < MAX_PRIO;++i)
+        if (!empty(&mlq_ready_queue[i]) && mlq_ready_queue[i].slot > 0) {
+            --mlq_ready_queue[i].slot;
+            rt = dequeue(&mlq_ready_queue[i]);
+            break;
         }
-        slot[curPRIO] = MAX_PRIO - curPRIO;
-        if (empty(&mlq_ready_queue[curPRIO])) curPRIO = 0; //THERE IS NO PROCESS IN PRIORITY READY QUEUE, RESET curPRIO
-        else {
-            slot[curPRIO]--;
-            rt = dequeue(&mlq_ready_queue[curPRIO]);
-            enqueue(&mlq_ready_queue[curPRIO], rt);
-        }
+    if (rt == NULL) {
+        for (int i = 0; i < MAX_PRIO; ++i)
+            mlq_ready_queue[i].slot = MAX_PRIO - i;
+        for (int i = 0; i < MAX_PRIO; ++i)
+            if (!empty(&mlq_ready_queue[i])) {
+                rt = dequeue(&mlq_ready_queue[i]);
+                --mlq_ready_queue[i].slot;
+                break;
+            }
     }
     pthread_mutex_unlock(&queue_lock);
     return rt;
